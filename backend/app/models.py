@@ -28,7 +28,7 @@ class User(Base):
 
 
 class Project(Base):
-    """One consultant engagement/contract to track over time (e.g. 'PPS — Albion Partners')."""
+    """One consultant engagement/contract to track over time (e.g. 'Riverside Tower — Acme Consulting')."""
 
     __tablename__ = "projects"
 

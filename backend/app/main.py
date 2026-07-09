@@ -8,6 +8,26 @@ from app.config import FRONTEND_DIST, UPLOAD_DIR, settings
 from app.database import init_db
 from app.routers import auth, billing, chat, contracts, inspection_reports, invoices, projects
 
+_PLACEHOLDER_JWT_SECRET = "change-this-to-a-long-random-secret"
+
+
+def _enforce_production_safety() -> None:
+    """Fail closed rather than ever serve the @fifthspace.com lock in a forgeable state.
+
+    When auth is required (production), refuse to boot if JWT_SECRET is still the public
+    placeholder — otherwise anyone reading the repo could forge a valid session and bypass the
+    domain restriction entirely. Render's render.yaml generates a real secret automatically.
+    """
+    if settings.require_auth and settings.jwt_secret == _PLACEHOLDER_JWT_SECRET:
+        raise RuntimeError(
+            "JWT_SECRET is still the default placeholder while REQUIRE_AUTH=true. Set JWT_SECRET "
+            "to a long random value before starting in production (the domain lock is not secure "
+            "without it)."
+        )
+
+
+_enforce_production_safety()
+
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 app = FastAPI(

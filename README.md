@@ -2,7 +2,7 @@
 
 A web application that reviews consultant invoices against their contract, builds the running
 billing sheet, and drafts the revision-request email — built for Fifth Space's project management
-team to automate the invoice-audit workflow Joe Worley runs by hand today.
+team to automate the invoice-audit workflow their PM team runs by hand today.
 
 ## What it does
 
@@ -113,7 +113,7 @@ that domain (configurable via `ALLOWED_EMAIL_DOMAIN`).
 
 ## Usage
 
-1. Create a project (e.g. "PPS — Albion Partners").
+1. Create a project (e.g. "Riverside Tower — Acme Consulting").
 2. Upload the contract — review the parsed fee schedule in the billing sheet.
 3. Upload each monthly invoice as it arrives — review the flags, download the updated Excel
    billing sheet, and use the drafted email to request revisions from the consultant.

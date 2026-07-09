@@ -73,7 +73,7 @@ export default function ProjectsList({ onOpenProject }) {
                 type="text"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
-                placeholder="e.g. Prequel Park — Albion Partners"
+                placeholder="e.g. Riverside Tower — Acme Consulting"
                 required
               />
             </label>
@@ -83,7 +83,7 @@ export default function ProjectsList({ onOpenProject }) {
                 type="text"
                 value={consultantName}
                 onChange={(e) => setConsultantName(e.target.value)}
-                placeholder="e.g. Albion Partners"
+                placeholder="e.g. Acme Consulting"
               />
             </label>
             <button type="submit" className="btn btn-primary" disabled={creating}>
