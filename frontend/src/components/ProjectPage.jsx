@@ -157,6 +157,7 @@ export default function ProjectPage({ projectId, onBack }) {
                   <InvoiceCard
                     key={inv.id}
                     invoice={inv}
+                    hasContract={!!contract}
                     onDelete={async (id) => {
                       await deleteInvoice(projectId, id);
                       await refresh();

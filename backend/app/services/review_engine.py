@@ -107,6 +107,7 @@ def _standalone_task_flags(item) -> list[dict]:
     """
     out: list[dict] = []
     label = item.raw_task_number or (item.description or "")[:50]
+    lid = item.id
     total = item.total_billed_to_date
     if total is None:
         total = (item.previously_billed or 0.0) + (item.billed_this_period or 0.0)
@@ -118,6 +119,7 @@ def _standalone_task_flags(item) -> list[dict]:
             out.append(
                 {
                     "contract_task_id": None,
+                    "line_item_id": lid,
                     "rule_code": "OVERBILLED",
                     "severity": "critical",
                     "message": f"Task {label} is billed to ${total:,.2f} against its stated ${est:,.2f} "
@@ -129,6 +131,7 @@ def _standalone_task_flags(item) -> list[dict]:
             out.append(
                 {
                     "contract_task_id": None,
+                    "line_item_id": lid,
                     "rule_code": "THRESHOLD_WARNING",
                     "severity": severity,
                     "message": f"Task {label} is {pct:.1%} billed (${total:,.2f} of ${est:,.2f}) — "
@@ -145,6 +148,7 @@ def _standalone_task_flags(item) -> list[dict]:
         out.append(
             {
                 "contract_task_id": None,
+                "line_item_id": lid,
                 "rule_code": "MATH_ERROR",
                 "severity": "warning",
                 "message": f"Task {label}: prior (${item.previously_billed:,.2f}) + this period "
@@ -399,32 +403,50 @@ def _summarize_from_invoices(project: Project) -> BillingSummaryResponse:
     order: list[str] = []
     for inv in sorted(project.invoices, key=_chron_key):
         for item in inv.line_items:
-            key = item.raw_task_number or (item.description or "").strip()[:60]
-            if key not in by_key:
-                order.append(key)
+            # Fold rows that share a real task number (cumulative — latest invoice wins). Lines
+            # with no task number (e.g. reimbursables, T&M receipt rows) are distinct per line, so
+            # give each its own key rather than collapsing them by (possibly empty) description.
+            if item.raw_task_number:
+                key = f"task:{item.raw_task_number}"
+            else:
+                key = f"line:{inv.id}:{item.id}"
+
+            # Derive current first, then total from it, so a line carrying only `amount`
+            # (every T&M / receipt line) still reports its billing instead of $0 / negative prior.
+            current = item.billed_this_period if item.billed_this_period is not None else (item.amount or 0.0)
             total = item.total_billed_to_date
             if total is None:
-                total = (item.previously_billed or 0.0) + (item.billed_this_period or 0.0)
-            current = item.billed_this_period if item.billed_this_period is not None else item.amount
+                total = (item.previously_billed or 0.0) + current
             prior = item.previously_billed
             if prior is None:
-                prior = (total or 0.0) - (current or 0.0)
+                prior = total - current
+
+            prev = by_key.get(key)
+            # Keep the last-known contract value if a later invoice omits it for this task.
+            est = item.contract_amount
+            if est is None and prev is not None:
+                est = prev["estimated_fee"]
+
+            if key not in by_key:
+                order.append(key)
             by_key[key] = {
                 "task_number": item.raw_task_number or "—",
-                "cost_code": item.raw_cost_code,
+                "cost_code": item.raw_cost_code or (prev["cost_code"] if prev else None),
                 "description": item.description,
-                "estimated_fee": item.contract_amount or 0.0,
-                "prior_billed": prior or 0.0,
-                "billed_this_period": current or 0.0,
-                "billed_to_date": total or 0.0,
+                "estimated_fee": est,
+                "prior_billed": prior,
+                "billed_this_period": current,
+                "billed_to_date": total,
             }
 
     rows: list[TaskSummaryRow] = []
     for key in order:
         d = by_key[key]
-        est = d["estimated_fee"]
+        est = d["estimated_fee"] or 0.0
         pct = (d["billed_to_date"] / est) if est else 0.0
         is_over = bool(est) and d["billed_to_date"] > est + AMOUNT_TOLERANCE
+        # Uncapped rows (no stated contract value) can't have a meaningful "remaining".
+        remaining = (est - d["billed_to_date"]) if est else 0.0
         rows.append(
             TaskSummaryRow(
                 task_number=d["task_number"],
@@ -436,7 +458,7 @@ def _summarize_from_invoices(project: Project) -> BillingSummaryResponse:
                 billed_this_period=d["billed_this_period"],
                 billed_to_date=d["billed_to_date"],
                 pct_billed=pct,
-                remaining=est - d["billed_to_date"],
+                remaining=remaining,
                 is_active=True,
                 flag_level=_flag_level_for_pct(pct, is_over) if est else None,
             )

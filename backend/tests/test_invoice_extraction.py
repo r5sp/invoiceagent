@@ -99,7 +99,7 @@ def test_looks_like_invoice_distinguishes_from_contract():
 
 def _line(**kw):
     base = dict(
-        raw_task_number=None, description="", contract_amount=None,
+        id=1, raw_task_number=None, description="", contract_amount=None,
         previously_billed=None, billed_this_period=None, total_billed_to_date=None,
     )
     base.update(kw)

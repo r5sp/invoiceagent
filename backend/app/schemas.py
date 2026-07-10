@@ -144,6 +144,7 @@ class InvoiceLineItemResponse(BaseModel):
 class ReviewFlagResponse(BaseModel):
     id: int
     contract_task_id: int | None
+    line_item_id: int | None = None
     rule_code: str
     severity: str
     message: str

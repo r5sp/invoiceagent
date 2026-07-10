@@ -105,16 +105,26 @@ _VALUE_TOKEN_RE = re.compile(r"^\(?\$?-?[\d,]+\.\d{2}\)?$")
 # ACLA-style task numbers embedded in the description: T6A1, T10A2, T18A3, T19A3::
 _TASK_NUM_RE = re.compile(r"^(T\d+[A-Za-z]?\d*)", re.IGNORECASE)
 _COST_CODE_RE = re.compile(r"(\d{4}-\d{3,4})")
-_CONTINUATION_STOP = ("total", "invoice", "thank", "page", "associate", "for", "job", "date", "project")
+# Only genuine footer/total markers end a continuation merge. (Ordinary description words like
+# "for"/"job" must NOT stop it, or a cost code on a wrapped line gets dropped.)
+_CONTINUATION_STOP = ("total", "invoice", "thank", "page", "subtotal")
 
 
-_INVOICE_SIGNAL_RE = re.compile(r"invoice\s*(?:no\.?|number|total|date)", re.IGNORECASE)
+_INVOICE_SIGNAL_RE = re.compile(r"\binvoice\s+(?:no\.?|number|total|date)\b", re.IGNORECASE)
+# Signals the document is a contract/agreement, not an invoice — must win over invoice boilerplate
+# like "submit invoices..." or an "Invoice Date:" field on a contract's sample billing sheet.
+_CONTRACT_SIGNAL_RE = re.compile(
+    r"exhibit\s+b|scope of services|not[\s\-]to[\s\-]exceed|consultant\s+agreement|fee schedule|rate schedule",
+    re.IGNORECASE,
+)
 
 
 def looks_like_invoice(raw_text: str) -> str | None:
     """If the document reads as an invoice (rather than a contract), return its invoice number
     (empty string if not found); otherwise None. Used to give a helpful redirect when someone
     drops an invoice into the Contract upload box."""
+    if _CONTRACT_SIGNAL_RE.search(raw_text):
+        return None
     if _INVOICE_SIGNAL_RE.search(raw_text):
         m = _INVOICE_NUMBER_RE.search(raw_text)
         return m.group(1) if m else ""
@@ -148,6 +158,12 @@ def detect_and_extract_acla_summary(
     """
     parsed = [_split_trailing_values(r) for r in word_rows if r]
 
+    # Positive signal guard: a real ACLA summary always has a "Contract" column header. Without
+    # it, a document that merely happens to have a couple of T-prefixed numeric rows isn't one.
+    joined_lower = " ".join(t for row in word_rows for t in row).lower()
+    if "contract" not in joined_lower:
+        return None
+
     # Which layout? Take the modal trailing-value count among task-numbered rows.
     counts: dict[int, int] = {}
     for desc, values in parsed:
@@ -164,12 +180,15 @@ def detect_and_extract_acla_summary(
     i = 0
     while i < len(parsed):
         desc, values = parsed[i]
-        if not (_looks_like_task_row(desc) and len(values) == ncols):
+        # Accept a recognized task/reimbursable row with AT LEAST ncols trailing values (a stray
+        # trailing number shouldn't make us silently drop the row); map the last ncols columns.
+        if not (_looks_like_task_row(desc) and len(values) >= ncols):
             i += 1
             continue
         if desc.strip().lower().startswith("total"):
             i += 1
             continue
+        row_values = values[-ncols:]
 
         # Merge wrapped continuation lines (they carry the rest of the description / cost code).
         merged = desc
@@ -177,7 +196,10 @@ def detect_and_extract_acla_summary(
         while j < len(parsed):
             next_desc, next_values = parsed[j]
             first = next_desc.split(" ", 1)[0].lower() if next_desc else ""
-            if next_values or _looks_like_task_row(next_desc) or first.startswith(_CONTINUATION_STOP):
+            if next_values or _looks_like_task_row(next_desc):
+                break
+            # Always absorb a wrapped line bearing a cost code; otherwise stop only on real footers.
+            if not _COST_CODE_RE.search(next_desc) and first.startswith(_CONTINUATION_STOP):
                 break
             merged = f"{merged} {next_desc}".strip()
             j += 1
@@ -186,12 +208,13 @@ def detect_and_extract_acla_summary(
         task_number = task_match.group(1).upper() if task_match else None
         cost_match = _COST_CODE_RE.search(merged)
         cost_code = cost_match.group(1) if cost_match else None
+        is_reimbursable = task_number is None and merged.strip().upper().startswith("REIMBURSABLE")
 
         if ncols == 5:
-            contract, _pct, _remaining, prior, current = values
+            contract, _pct, _remaining, prior, current = row_values
             total_billed = (prior or 0.0) + (current or 0.0)
         else:  # ncols == 3
-            contract, total_billed, current = values
+            contract, total_billed, current = row_values
             prior = (total_billed or 0.0) - (current or 0.0)
 
         if task_number and task_number in seen_task_numbers:
@@ -208,7 +231,9 @@ def detect_and_extract_acla_summary(
                 previously_billed=prior,
                 billed_this_period=current,
                 total_billed_to_date=total_billed,
-                estimated_fee=contract,
+                # Reimbursables aren't capped tasks — don't give them a contract value (avoids a
+                # spurious "at the task limit" flag when a fully-billed reimbursable hits 100%).
+                estimated_fee=None if is_reimbursable else contract,
             )
         )
         i = j

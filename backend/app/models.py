@@ -163,6 +163,9 @@ class ReviewFlag(Base):
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     invoice_id: Mapped[int] = mapped_column(ForeignKey("invoices.id"), nullable=False, index=True)
     contract_task_id: Mapped[int | None] = mapped_column(ForeignKey("contract_tasks.id"), nullable=True)
+    # Set for line-level flags that aren't tied to a contract task (e.g. standalone/no-contract
+    # analysis), so the Excel invoice tab can attribute each flag to its own row.
+    line_item_id: Mapped[int | None] = mapped_column(ForeignKey("invoice_line_items.id"), nullable=True)
     rule_code: Mapped[str] = mapped_column(String(50), nullable=False)
     severity: Mapped[str] = mapped_column(String(20), default="warning", nullable=False)  # info|warning|critical
     message: Mapped[str] = mapped_column(Text, nullable=False)

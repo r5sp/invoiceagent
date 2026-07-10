@@ -169,6 +169,7 @@ def upload_invoice(
             ReviewFlag(
                 invoice_id=invoice.id,
                 contract_task_id=f.get("contract_task_id"),
+                line_item_id=f.get("line_item_id"),
                 rule_code=f["rule_code"],
                 severity=f["severity"],
                 message=f["message"],

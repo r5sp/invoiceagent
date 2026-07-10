@@ -8,7 +8,7 @@ function fmt(n) {
 
 const SEVERITY_ORDER = { critical: 0, warning: 1, info: 2 };
 
-export default function InvoiceCard({ invoice, onDelete }) {
+export default function InvoiceCard({ invoice, onDelete, hasContract = false }) {
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState(null);
   const [draftLoading, setDraftLoading] = useState(false);
@@ -78,7 +78,7 @@ export default function InvoiceCard({ invoice, onDelete }) {
         <div className="invoice-card-body">
           {sortedFlags.length === 0 ? (
             <p style={{ color: "var(--fs-light-blue)", fontSize: "0.875rem" }}>
-              No issues found — matches the contract.
+              {hasContract ? "No issues found — matches the contract." : "No issues found — invoice checks passed."}
             </p>
           ) : (
             <div style={{ marginBottom: "var(--fs-space-2)" }}>
@@ -125,7 +125,7 @@ export default function InvoiceCard({ invoice, onDelete }) {
                       <th>Qty</th>
                       <th>Rate</th>
                       <th>Amount</th>
-                      <th>Matched?</th>
+                      <th>{hasContract ? "Matched?" : "Task"}</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -140,8 +140,10 @@ export default function InvoiceCard({ invoice, onDelete }) {
                         <td>
                           {li.contract_task_id ? (
                             <span className="badge badge-review-no">matched</span>
-                          ) : (
+                          ) : hasContract ? (
                             <span className="badge-severity critical">unmatched</span>
+                          ) : (
+                            <span style={{ color: "var(--fs-light-blue)" }}>—</span>
                           )}
                         </td>
                       </tr>

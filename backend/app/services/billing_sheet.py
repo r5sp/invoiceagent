@@ -151,9 +151,21 @@ def _build_invoice_sheet(wb: Workbook, project: Project, invoice, used_names: se
         ws.cell(row=header_row, column=col, value=text)
     _style_header(ws, header_row, len(headers))
 
-    flags_by_task: dict[int | None, list[str]] = {}
+    has_contract = bool(tasks_by_id)
+    # Attribute each flag to its own row: line-level flags by line_item_id, contract-task flags by
+    # task id. Flags with neither (invoice-wide, e.g. total mismatch) are listed below the table
+    # rather than smeared onto every row.
+    flags_by_line: dict[int, list[str]] = {}
+    flags_by_task: dict[int, list[str]] = {}
+    invoice_level_flags: list[str] = []
     for f in invoice.flags:
-        flags_by_task.setdefault(f.contract_task_id, []).append(f"[{f.severity.upper()}] {f.rule_code}")
+        label = f"[{f.severity.upper()}] {f.rule_code}"
+        if f.line_item_id is not None:
+            flags_by_line.setdefault(f.line_item_id, []).append(label)
+        elif f.contract_task_id is not None:
+            flags_by_task.setdefault(f.contract_task_id, []).append(label)
+        else:
+            invoice_level_flags.append(f"[{f.severity.upper()}] {f.rule_code}: {f.message}")
 
     row = header_row + 1
     for item in invoice.line_items:
@@ -169,20 +181,30 @@ def _build_invoice_sheet(wb: Workbook, project: Project, invoice, used_names: se
             ws.cell(row=row, column=7, value=item.unit_rate).number_format = CURRENCY_FMT
         ws.cell(row=row, column=8, value=amount).number_format = CURRENCY_FMT
         ws.cell(row=row, column=9, value=item.category)
-        ws.cell(
-            row=row,
-            column=10,
-            value=f"{matched.task_number} — {matched.description[:40]}" if matched else "— unmatched —",
-        )
-        item_flags = flags_by_task.get(item.contract_task_id, [])
+        if matched:
+            ws.cell(row=row, column=10, value=f"{matched.task_number} — {matched.description[:40]}")
+        elif has_contract:
+            # A contract exists but this line matched nothing — genuinely worth flagging.
+            ws.cell(row=row, column=10, value="— unmatched —").fill = CRITICAL_FILL
+        else:
+            ws.cell(row=row, column=10, value="— (no contract) —")
+
+        item_flags = list(flags_by_line.get(item.id, []))
+        if item.contract_task_id is not None:
+            item_flags += flags_by_task.get(item.contract_task_id, [])
         flag_cell = ws.cell(row=row, column=11, value="; ".join(item_flags))
         if any("CRITICAL" in f for f in item_flags):
             flag_cell.fill = CRITICAL_FILL
         elif item_flags:
             flag_cell.fill = WARNING_FILL
-        if item.contract_task_id is None:
-            ws.cell(row=row, column=10).fill = CRITICAL_FILL
         row += 1
+
+    if invoice_level_flags:
+        row += 1
+        ws.cell(row=row, column=1, value="Invoice-level flags:").font = Font(bold=True)
+        for msg in invoice_level_flags:
+            row += 1
+            ws.cell(row=row, column=1, value=msg)
 
     ws.freeze_panes = f"A{header_row + 1}"
     _autosize(ws, [8, 14, 42, 12, 16, 8, 12, 14, 12, 34, 30])
