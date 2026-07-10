@@ -100,11 +100,66 @@ def _week_key(d: date) -> tuple[int, int]:
     return (iso[0], iso[1])
 
 
+def _standalone_task_flags(item) -> list[dict]:
+    """Checks that use only the invoice line's OWN stated figures — so an invoice analyzes
+    even with no separate contract uploaded (most invoices carry a 'Contract Amount' column).
+    Covers Joe's headline ask: flag a task as it approaches / exceeds its contract value.
+    """
+    out: list[dict] = []
+    label = item.raw_task_number or (item.description or "")[:50]
+    total = item.total_billed_to_date
+    if total is None:
+        total = (item.previously_billed or 0.0) + (item.billed_this_period or 0.0)
+
+    est = item.contract_amount
+    if est and est > 0:
+        pct = total / est
+        if total > est + AMOUNT_TOLERANCE:
+            out.append(
+                {
+                    "contract_task_id": None,
+                    "rule_code": "OVERBILLED",
+                    "severity": "critical",
+                    "message": f"Task {label} is billed to ${total:,.2f} against its stated ${est:,.2f} "
+                    f"contract value — {pct:.1%} of the task total.",
+                }
+            )
+        elif pct >= settings.billed_warning_threshold:
+            severity = "critical" if pct >= settings.billed_critical_threshold else "warning"
+            out.append(
+                {
+                    "contract_task_id": None,
+                    "rule_code": "THRESHOLD_WARNING",
+                    "severity": severity,
+                    "message": f"Task {label} is {pct:.1%} billed (${total:,.2f} of ${est:,.2f}) — "
+                    f"{'at the task limit' if pct >= 1 else 'approaching the task limit'}.",
+                }
+            )
+
+    if (
+        item.previously_billed is not None
+        and item.billed_this_period is not None
+        and item.total_billed_to_date is not None
+        and abs((item.previously_billed + item.billed_this_period) - item.total_billed_to_date) > AMOUNT_TOLERANCE
+    ):
+        out.append(
+            {
+                "contract_task_id": None,
+                "rule_code": "MATH_ERROR",
+                "severity": "warning",
+                "message": f"Task {label}: prior (${item.previously_billed:,.2f}) + this period "
+                f"(${item.billed_this_period:,.2f}) ≠ total billed (${item.total_billed_to_date:,.2f}).",
+            }
+        )
+    return out
+
+
 def review_invoice(project: Project, invoice: Invoice) -> list[dict]:
     """Returns a list of flag dicts: {contract_task_id, rule_code, severity, message}."""
     flags: list[dict] = []
     contract = latest_contract(project)
     tasks_by_id = {t.id: t for t in (contract.tasks if contract else [])}
+    has_contract = bool(tasks_by_id)
     ledger = build_task_ledger(project)
 
     # --- Line-item level checks -------------------------------------------------
@@ -116,15 +171,19 @@ def review_invoice(project: Project, invoice: Invoice) -> list[dict]:
         task = tasks_by_id.get(item.contract_task_id) if item.contract_task_id else None
 
         if item.contract_task_id is None:
-            flags.append(
-                {
-                    "contract_task_id": None,
-                    "rule_code": "NOT_IN_CONTRACT",
-                    "severity": "critical",
-                    "message": f"Line item “{item.description}” (${item.amount:,.2f}) doesn't match any "
-                    "task in the contract's fee schedule — confirm this work is authorized before paying it.",
-                }
-            )
+            if has_contract:
+                flags.append(
+                    {
+                        "contract_task_id": None,
+                        "rule_code": "NOT_IN_CONTRACT",
+                        "severity": "critical",
+                        "message": f"Line item “{item.description}” (${item.amount:,.2f}) doesn't match any "
+                        "task in the contract's fee schedule — confirm this work is authorized before paying it.",
+                    }
+                )
+            else:
+                # No contract uploaded — analyze the line against its own stated contract figures.
+                flags.extend(_standalone_task_flags(item))
         elif task and item.raw_cost_code and task.cost_code:
             if item.raw_cost_code.strip().split("/")[0].strip() != task.cost_code.strip().split("/")[0].strip():
                 flags.append(
@@ -321,10 +380,85 @@ def review_invoice(project: Project, invoice: Invoice) -> list[dict]:
     return flags
 
 
+def _flag_level_for_pct(pct: float, is_over: bool) -> str | None:
+    if is_over or pct >= settings.billed_critical_threshold:
+        return "critical"
+    if pct >= settings.billed_warning_threshold:
+        return "warning"
+    return None
+
+
+def _summarize_from_invoices(project: Project) -> BillingSummaryResponse:
+    """Build the schedule-of-values from the invoices themselves when no contract is on file.
+
+    Invoices like ACLA's carry a Contract Amount + billed-to-date per task, so we can show
+    the full billing sheet (with the 75% / at-limit conditional flags) from invoices alone.
+    Uses the most recent stated figures per task across all uploaded invoices.
+    """
+    by_key: dict[str, dict] = {}
+    order: list[str] = []
+    for inv in sorted(project.invoices, key=_chron_key):
+        for item in inv.line_items:
+            key = item.raw_task_number or (item.description or "").strip()[:60]
+            if key not in by_key:
+                order.append(key)
+            total = item.total_billed_to_date
+            if total is None:
+                total = (item.previously_billed or 0.0) + (item.billed_this_period or 0.0)
+            current = item.billed_this_period if item.billed_this_period is not None else item.amount
+            prior = item.previously_billed
+            if prior is None:
+                prior = (total or 0.0) - (current or 0.0)
+            by_key[key] = {
+                "task_number": item.raw_task_number or "—",
+                "cost_code": item.raw_cost_code,
+                "description": item.description,
+                "estimated_fee": item.contract_amount or 0.0,
+                "prior_billed": prior or 0.0,
+                "billed_this_period": current or 0.0,
+                "billed_to_date": total or 0.0,
+            }
+
+    rows: list[TaskSummaryRow] = []
+    for key in order:
+        d = by_key[key]
+        est = d["estimated_fee"]
+        pct = (d["billed_to_date"] / est) if est else 0.0
+        is_over = bool(est) and d["billed_to_date"] > est + AMOUNT_TOLERANCE
+        rows.append(
+            TaskSummaryRow(
+                task_number=d["task_number"],
+                cost_code=d["cost_code"],
+                description=d["description"],
+                fee_type="tm",
+                estimated_fee=est,
+                prior_billed=d["prior_billed"],
+                billed_this_period=d["billed_this_period"],
+                billed_to_date=d["billed_to_date"],
+                pct_billed=pct,
+                remaining=est - d["billed_to_date"],
+                is_active=True,
+                flag_level=_flag_level_for_pct(pct, is_over) if est else None,
+            )
+        )
+
+    return BillingSummaryResponse(
+        rows=rows,
+        contract_total=sum(r.estimated_fee for r in rows),
+        total_billed_to_date=sum(r.billed_to_date for r in rows),
+        total_remaining=sum(r.remaining for r in rows),
+    )
+
+
 def summarize_billing(project: Project) -> BillingSummaryResponse:
-    """Schedule-of-values summary: one row per contract task, as of the latest invoice."""
+    """Schedule-of-values summary: one row per contract task, as of the latest invoice.
+
+    Falls back to summarizing directly from the invoices when no contract is uploaded.
+    """
     contract = latest_contract(project)
     tasks = contract.tasks if contract else []
+    if not tasks:
+        return _summarize_from_invoices(project)
     ledger = build_task_ledger(project)
 
     rows: list[TaskSummaryRow] = []

@@ -104,8 +104,8 @@ export default function ProjectPage({ projectId, onBack }) {
               </div>
             ) : (
               <UploadDropzone
-                label="Drop the contract here"
-                sublabel="PDF or DOCX — we'll parse the Exhibit B fee schedule"
+                label="Drop the contract here (optional)"
+                sublabel="PDF or DOCX — the consultant's agreement / Exhibit B fee schedule. Optional: invoices analyze on their own; add the contract for full rate & cost-code cross-checks."
                 onUpload={async (file) => {
                   await uploadContract(projectId, file);
                   await refresh();
@@ -117,7 +117,7 @@ export default function ProjectPage({ projectId, onBack }) {
           <section className="fs-section-inner" style={{ marginBottom: "var(--fs-space-4)" }}>
             <div className="section-toolbar">
               <SectionHeading label="Billing sheet" number={2} />
-              {contract && (
+              {summary?.rows?.length > 0 && (
                 <a className="btn btn-secondary btn-sm" href={getBillingSheetUrl(projectId)} download>
                   Download Excel
                 </a>
@@ -130,7 +130,8 @@ export default function ProjectPage({ projectId, onBack }) {
             <SectionHeading label="Invoices" number={3} />
             {!contract && (
               <p style={{ color: "var(--fs-light-blue)", marginBottom: "var(--fs-space-2)" }}>
-                Upload the contract first so invoices can be checked against it.
+                Drop invoices here — they're analyzed on their own (% billed, 75%/at-limit flags, math checks).
+                Add the contract above for full cross-checks against the fee schedule.
               </p>
             )}
             <div style={{ marginBottom: "var(--fs-space-2)" }}>

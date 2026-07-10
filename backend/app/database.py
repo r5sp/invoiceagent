@@ -1,6 +1,6 @@
 """Database engine and session management."""
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 from app.config import settings
@@ -40,3 +40,10 @@ def init_db():
     from app import models  # noqa: F401
 
     Base.metadata.create_all(bind=engine)
+
+    # Lightweight additive migrations for existing SQLite databases (create_all won't ALTER).
+    if DATABASE_URL.startswith("sqlite"):
+        with engine.begin() as conn:
+            cols = {row[1] for row in conn.execute(text("PRAGMA table_info(invoice_line_items)")).fetchall()}
+            if cols and "contract_amount" not in cols:
+                conn.execute(text("ALTER TABLE invoice_line_items ADD COLUMN contract_amount FLOAT"))

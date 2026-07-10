@@ -11,6 +11,7 @@ from app.routers.projects import get_owned_project
 from app.schemas import ContractResponse
 from app.services.contract_extraction import extract_contract_tasks
 from app.services.file_parser import extract_tables_from_pdf, extract_text, validate_file_type
+from app.services.invoice_extraction import looks_like_invoice
 
 router = APIRouter(prefix="/api/projects/{project_id}/contracts", tags=["contracts"])
 
@@ -46,10 +47,20 @@ def upload_contract(
 
     result, _method = extract_contract_tasks(raw_text, tables)
     if not result.tasks:
+        inv_no = looks_like_invoice(raw_text)
+        if inv_no is not None:
+            label = f" (#{inv_no})" if inv_no else ""
+            raise HTTPException(
+                status_code=422,
+                detail=f"This looks like an invoice{label}, not a contract. Upload it under “Invoices” "
+                "(section 3) instead — invoices are analyzed on their own, even without a contract. The "
+                "Contract box is only for the consultant's agreement / Exhibit B fee schedule.",
+            )
         raise HTTPException(
             status_code=422,
-            detail="Couldn't find a fee schedule (Exhibit B) in this document. Configure OPENAI_API_KEY for "
-            "more robust parsing, or confirm the contract includes a task/fee table.",
+            detail="Couldn't find a fee schedule (Exhibit B) in this document. Make sure this is the "
+            "consultant's contract/agreement with its task & fee table. (Invoices go under “Invoices” "
+            "below — they don't need a contract to be analyzed.)",
         )
 
     contract = Contract(

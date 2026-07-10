@@ -58,6 +58,7 @@ def _line_dicts_from_extraction(fmt: str, task_rows, tm_items) -> list[dict]:
                     "previously_billed": row.previously_billed,
                     "billed_this_period": row.billed_this_period,
                     "total_billed_to_date": row.total_billed_to_date,
+                    "contract_amount": row.estimated_fee,
                     "category": "labor",
                 }
             )
@@ -77,6 +78,7 @@ def _line_dicts_from_extraction(fmt: str, task_rows, tm_items) -> list[dict]:
                     "previously_billed": None,
                     "billed_this_period": None,
                     "total_billed_to_date": None,
+                    "contract_amount": None,
                     "category": item.category,
                 }
             )
@@ -152,6 +154,7 @@ def upload_invoice(
                 previously_billed=d.get("previously_billed"),
                 billed_this_period=d.get("billed_this_period"),
                 total_billed_to_date=d.get("total_billed_to_date"),
+                contract_amount=d.get("contract_amount"),
                 category=d.get("category", "labor"),
                 correlation_confidence=d.get("correlation_confidence"),
             )

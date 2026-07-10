@@ -134,6 +134,7 @@ class InvoiceLineItemResponse(BaseModel):
     previously_billed: float | None
     billed_this_period: float | None
     total_billed_to_date: float | None
+    contract_amount: float | None = None
     category: str
     correlation_confidence: str | None
 

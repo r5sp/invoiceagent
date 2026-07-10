@@ -108,6 +108,19 @@ _COST_CODE_RE = re.compile(r"(\d{4}-\d{3,4})")
 _CONTINUATION_STOP = ("total", "invoice", "thank", "page", "associate", "for", "job", "date", "project")
 
 
+_INVOICE_SIGNAL_RE = re.compile(r"invoice\s*(?:no\.?|number|total|date)", re.IGNORECASE)
+
+
+def looks_like_invoice(raw_text: str) -> str | None:
+    """If the document reads as an invoice (rather than a contract), return its invoice number
+    (empty string if not found); otherwise None. Used to give a helpful redirect when someone
+    drops an invoice into the Contract upload box."""
+    if _INVOICE_SIGNAL_RE.search(raw_text):
+        m = _INVOICE_NUMBER_RE.search(raw_text)
+        return m.group(1) if m else ""
+    return None
+
+
 def _split_trailing_values(tokens: list[str]) -> tuple[str, list[float]]:
     """Split a reconstructed visual row into (description, [trailing numeric column values])."""
     n = len(tokens)
@@ -296,8 +309,9 @@ def extract_invoice_metadata_heuristic(raw_text: str) -> dict:
 def extract_invoice_tm_receipt_llm(raw_text: str) -> InvoiceExtractionResult:
     if not has_valid_api_key():
         raise RuntimeError(
-            "This invoice isn't in the standard billing-sheet format, so it needs AI parsing — "
-            "set OPENAI_API_KEY on the server to enable it."
+            "We couldn't automatically read this invoice's line items — it's an unusual or scanned "
+            "layout that needs AI parsing. Set OPENAI_API_KEY on the server to enable it. (Standard "
+            "task/fee invoices with a Contract Amount or Billed column are read without a key.)"
         )
     return call_json_llm(
         INVOICE_SYSTEM_PROMPT,

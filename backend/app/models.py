@@ -146,6 +146,10 @@ class InvoiceLineItem(Base):
     previously_billed: Mapped[float | None] = mapped_column(Float, nullable=True)
     billed_this_period: Mapped[float | None] = mapped_column(Float, nullable=True)
     total_billed_to_date: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # The task's contract/NTE value as stated on the invoice itself (many invoices carry a
+    # "Contract Amount" column). Lets us analyze % billed / overbilling even with no separate
+    # contract uploaded.
+    contract_amount: Mapped[float | None] = mapped_column(Float, nullable=True)
     category: Mapped[str] = mapped_column(String(20), default="labor", nullable=False)  # labor|reimbursable|expense
     correlation_confidence: Mapped[str | None] = mapped_column(String(20), nullable=True)
 

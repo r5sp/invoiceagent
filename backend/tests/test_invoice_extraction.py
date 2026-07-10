@@ -5,10 +5,14 @@ using synthetic coordinate-reconstructed rows, so the parser can't silently regr
 needing the consultant's PDFs in the repo.
 """
 
+from types import SimpleNamespace
+
 from app.services.invoice_extraction import (
     detect_and_extract_acla_summary,
     extract_invoice_metadata_heuristic,
+    looks_like_invoice,
 )
+from app.services.review_engine import _standalone_task_flags
 
 
 # Layout A: Description | Contract Amount | Percent Complete | Remaining | Prior Billed | Current Billed
@@ -84,6 +88,43 @@ def test_acla_3col_layout_and_reimbursable():
 def test_non_acla_rows_return_none():
     # A plain document with no T-numbered value rows must not be misdetected.
     assert detect_and_extract_acla_summary([["Hello", "world"], ["Some", "prose", "here"]]) is None
+
+
+def test_looks_like_invoice_distinguishes_from_contract():
+    assert looks_like_invoice("Associate Capital Invoice number 10776\nDate 06/03/2026") == "10776"
+    assert looks_like_invoice("Invoice total 10,972.50") == ""  # invoice, no number found
+    # A contract/agreement must NOT be flagged as an invoice.
+    assert looks_like_invoice("CONSULTANT AGREEMENT — Exhibit B, Compensation. Task 1 ...") is None
+
+
+def _line(**kw):
+    base = dict(
+        raw_task_number=None, description="", contract_amount=None,
+        previously_billed=None, billed_this_period=None, total_billed_to_date=None,
+    )
+    base.update(kw)
+    return SimpleNamespace(**base)
+
+
+def test_standalone_flags_at_and_over_limit():
+    # Fully billed → at-limit critical.
+    flags = _standalone_task_flags(_line(raw_task_number="T3A1", contract_amount=42000.0, total_billed_to_date=42000.0))
+    assert any(f["rule_code"] == "THRESHOLD_WARNING" and f["severity"] == "critical" for f in flags)
+
+    # Overbilled → OVERBILLED critical.
+    over = _standalone_task_flags(_line(raw_task_number="T9", contract_amount=1000.0, total_billed_to_date=1500.0))
+    assert any(f["rule_code"] == "OVERBILLED" for f in over)
+
+    # Comfortably under threshold → no flag.
+    under = _standalone_task_flags(_line(raw_task_number="T18A3", contract_amount=8000.0, total_billed_to_date=3750.0))
+    assert under == []
+
+
+def test_standalone_flags_internal_math():
+    bad = _standalone_task_flags(
+        _line(raw_task_number="T1", previously_billed=100.0, billed_this_period=50.0, total_billed_to_date=200.0)
+    )
+    assert any(f["rule_code"] == "MATH_ERROR" for f in bad)
 
 
 def test_acla_metadata_field_names():
