@@ -10,7 +10,12 @@ from app.models import Invoice, InvoiceLineItem, ReviewFlag, User
 from app.routers.projects import get_owned_project
 from app.schemas import InvoiceResponse
 from app.services.correlation import correlate_line_items
-from app.services.file_parser import extract_tables_from_pdf, extract_text, validate_file_type
+from app.services.file_parser import (
+    extract_tables_from_pdf,
+    extract_text,
+    extract_word_rows_from_pdf,
+    validate_file_type,
+)
 from app.services.invoice_extraction import extract_invoice
 from app.services.parsing_utils import parse_date
 from app.services.review_engine import latest_contract, review_invoice
@@ -97,12 +102,13 @@ def upload_invoice(
     if not raw_text.strip():
         raise HTTPException(status_code=422, detail="No readable text found in this document.")
     tables = extract_tables_from_pdf(content) if ext == ".pdf" else []
+    word_rows = extract_word_rows_from_pdf(content) if ext == ".pdf" else []
 
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     (UPLOAD_DIR / f"invoice_{project_id}_{file.filename}").write_bytes(content)
 
     try:
-        fmt, task_rows, tm_items, metadata = extract_invoice(raw_text, tables)
+        fmt, task_rows, tm_items, metadata = extract_invoice(raw_text, tables, word_rows)
     except RuntimeError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 

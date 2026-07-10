@@ -60,3 +60,32 @@ def extract_tables_from_pdf(file_bytes: bytes) -> list[list[list[str | None]]]:
                 if table:
                     tables.append(table)
     return tables
+
+
+def extract_word_rows_from_pdf(file_bytes: bytes, y_tolerance: float = 3.0) -> list[list[str]]:
+    """Reconstruct the visual rows of a PDF by clustering words on their y-position.
+
+    Many consultant invoices (e.g. ACLA) render their billing summary as a borderless
+    grid that pdfplumber's line-based extract_tables() can't see, and whose plain text
+    comes out with the number columns detached from their descriptions. Grouping words by
+    their vertical position and sorting each group left-to-right rebuilds the true rows —
+    so 'T6A1 Construction Documents ...' lands on one row alongside its dollar columns,
+    regardless of the PDF's internal text order. Returns one token list per visual row,
+    across all pages, in top-to-bottom order.
+    """
+    rows: list[list[str]] = []
+    with pdfplumber.open(BytesIO(file_bytes)) as pdf:
+        for page in pdf.pages:
+            clusters: list[dict] = []
+            words = page.extract_words(use_text_flow=False, keep_blank_chars=False)
+            for w in sorted(words, key=lambda w: (round(w["top"]), w["x0"])):
+                for c in clusters:
+                    if abs(c["top"] - w["top"]) <= y_tolerance:
+                        c["words"].append(w)
+                        break
+                else:
+                    clusters.append({"top": w["top"], "words": [w]})
+            for c in sorted(clusters, key=lambda c: c["top"]):
+                ordered = sorted(c["words"], key=lambda w: w["x0"])
+                rows.append([w["text"] for w in ordered])
+    return rows

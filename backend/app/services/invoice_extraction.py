@@ -86,12 +86,121 @@ _HEADER_MARKERS = {
     "balance remaining": "balance_remaining",
 }
 
-_INVOICE_NUMBER_RE = re.compile(r"Invoice\s*No\.?:?\s*([A-Za-z0-9\-]+)", re.IGNORECASE)
+_INVOICE_NUMBER_RE = re.compile(r"Invoice\s*(?:No\.?|number)\.?:?\s*([A-Za-z0-9\-]+)", re.IGNORECASE)
 _INVOICE_DATE_RE = re.compile(r"Invoice\s*Date:?\s*([A-Za-z0-9,/ ]+?)(?:\n|$)", re.IGNORECASE)
+_DATE_LINE_RE = re.compile(r"^\s*Date\s+([0-9]{1,2}/[0-9]{1,2}/[0-9]{2,4})\s*$", re.IGNORECASE | re.MULTILINE)
 _PERIOD_RE = re.compile(
     r"(?:Billing\s*Period|Period):?\s*([A-Za-z0-9,\-/ ]+?)(?:\n|$)", re.IGNORECASE
 )
+_SERVICES_THROUGH_RE = re.compile(
+    r"Professional\s+Services\s+Through\s+([0-9]{1,2}/[0-9]{1,2}/[0-9]{2,4})", re.IGNORECASE
+)
 _TOTAL_RE = re.compile(r"TOTAL\s+INVOICE\s+AMOUNT\D{0,10}\$?\s*([\d,]+(?:\.\d+)?)", re.IGNORECASE)
+_INVOICE_TOTAL_RE = re.compile(r"Invoice\s+total\D{0,10}\$?\s*([\d,]+(?:\.\d+)?)", re.IGNORECASE)
+
+# A dollar/percent value column: digits with exactly two decimals, optional $, commas, or
+# accounting-negative parens. Deliberately does NOT match task numbers ("T6A1"), cost codes
+# ("2100-0450"), or bare integers ("Park 2") so they stay in the description.
+_VALUE_TOKEN_RE = re.compile(r"^\(?\$?-?[\d,]+\.\d{2}\)?$")
+# ACLA-style task numbers embedded in the description: T6A1, T10A2, T18A3, T19A3::
+_TASK_NUM_RE = re.compile(r"^(T\d+[A-Za-z]?\d*)", re.IGNORECASE)
+_COST_CODE_RE = re.compile(r"(\d{4}-\d{3,4})")
+_CONTINUATION_STOP = ("total", "invoice", "thank", "page", "associate", "for", "job", "date", "project")
+
+
+def _split_trailing_values(tokens: list[str]) -> tuple[str, list[float]]:
+    """Split a reconstructed visual row into (description, [trailing numeric column values])."""
+    n = len(tokens)
+    while n > 0 and _VALUE_TOKEN_RE.match(tokens[n - 1]):
+        n -= 1
+    desc = " ".join(tokens[:n]).strip()
+    values = [parse_currency(t) for t in tokens[n:]]
+    return desc, [v for v in values if v is not None]
+
+
+def _looks_like_task_row(desc: str) -> bool:
+    return bool(_TASK_NUM_RE.match(desc)) or desc.strip().upper().startswith("REIMBURSABLE")
+
+
+def detect_and_extract_acla_summary(
+    word_rows: list[list[str]],
+) -> list[TaskCorrelationExtract] | None:
+    """Parse a borderless ACLA-style billing summary from coordinate-reconstructed rows.
+
+    Handles the two layouts seen in practice, keyed off the trailing-value count:
+    - 5 columns: Contract Amount | Percent Complete | Remaining | Prior Billed | Current Billed
+    - 3 columns: Contract Amt | Total Billed | Current Billed
+    Task number and cost code are pulled out of the description text (they are not their own
+    columns), merging the wrapped continuation line that often carries the cost code.
+    """
+    parsed = [_split_trailing_values(r) for r in word_rows if r]
+
+    # Which layout? Take the modal trailing-value count among task-numbered rows.
+    counts: dict[int, int] = {}
+    for desc, values in parsed:
+        if _TASK_NUM_RE.match(desc) and len(values) in (3, 5):
+            counts[len(values)] = counts.get(len(values), 0) + 1
+    if not counts:
+        return None
+    ncols = max(counts, key=lambda k: counts[k])
+    if counts[ncols] < 2:  # need a couple of real task rows to trust this is an ACLA summary
+        return None
+
+    rows: list[TaskCorrelationExtract] = []
+    seen_task_numbers: set[str] = set()
+    i = 0
+    while i < len(parsed):
+        desc, values = parsed[i]
+        if not (_looks_like_task_row(desc) and len(values) == ncols):
+            i += 1
+            continue
+        if desc.strip().lower().startswith("total"):
+            i += 1
+            continue
+
+        # Merge wrapped continuation lines (they carry the rest of the description / cost code).
+        merged = desc
+        j = i + 1
+        while j < len(parsed):
+            next_desc, next_values = parsed[j]
+            first = next_desc.split(" ", 1)[0].lower() if next_desc else ""
+            if next_values or _looks_like_task_row(next_desc) or first.startswith(_CONTINUATION_STOP):
+                break
+            merged = f"{merged} {next_desc}".strip()
+            j += 1
+
+        task_match = _TASK_NUM_RE.match(merged)
+        task_number = task_match.group(1).upper() if task_match else None
+        cost_match = _COST_CODE_RE.search(merged)
+        cost_code = cost_match.group(1) if cost_match else None
+
+        if ncols == 5:
+            contract, _pct, _remaining, prior, current = values
+            total_billed = (prior or 0.0) + (current or 0.0)
+        else:  # ncols == 3
+            contract, total_billed, current = values
+            prior = (total_billed or 0.0) - (current or 0.0)
+
+        if task_number and task_number in seen_task_numbers:
+            i = j
+            continue
+        if task_number:
+            seen_task_numbers.add(task_number)
+
+        rows.append(
+            TaskCorrelationExtract(
+                raw_task_number=task_number,
+                raw_cost_code=cost_code,
+                description=merged,
+                previously_billed=prior,
+                billed_this_period=current,
+                total_billed_to_date=total_billed,
+                estimated_fee=contract,
+            )
+        )
+        i = j
+
+    return rows or None
 
 
 def _find_billing_sheet_table(
@@ -160,11 +269,17 @@ def extract_invoice_metadata_heuristic(raw_text: str) -> dict:
     invoice_date = None
     if m := _INVOICE_DATE_RE.search(raw_text):
         invoice_date = parse_date(m.group(1).strip())
+    if invoice_date is None and (m := _DATE_LINE_RE.search(raw_text)):
+        invoice_date = parse_date(m.group(1).strip())
     period_start, period_end = None, None
     if m := _PERIOD_RE.search(raw_text):
         period_start, period_end = parse_period_range(m.group(1).strip())
+    if period_end is None and (m := _SERVICES_THROUGH_RE.search(raw_text)):
+        period_end = parse_date(m.group(1).strip())
     total_amount = None
     if m := _TOTAL_RE.search(raw_text):
+        total_amount = parse_currency(m.group(1))
+    elif m := _INVOICE_TOTAL_RE.search(raw_text):
         total_amount = parse_currency(m.group(1))
     return {
         "invoice_number": invoice_number,
@@ -192,13 +307,28 @@ def extract_invoice_tm_receipt_llm(raw_text: str) -> InvoiceExtractionResult:
 
 
 def extract_invoice(
-    raw_text: str, tables: list[list[list[str | None]]]
+    raw_text: str,
+    tables: list[list[list[str | None]]],
+    word_rows: list[list[str]] | None = None,
 ) -> tuple[str, list[TaskCorrelationExtract] | None, list, dict]:
-    """Returns (format, task_rows_or_none, tm_line_items, metadata)."""
+    """Returns (format, task_rows_or_none, tm_line_items, metadata).
+
+    Tries the cheapest parsers first, only falling back to the LLM for genuinely
+    unstructured invoices:
+      1. ruled billing-sheet table (pdfplumber tables) — e.g. Albion 021/022
+      2. borderless coordinate-reconstructed summary — e.g. ACLA 10775/10776
+      3. LLM line-item extraction — task-sectioned T&M / "restaurant receipt" (CTS)
+    """
     task_rows = detect_and_extract_task_correlated(tables)
     if task_rows:
         metadata = extract_invoice_metadata_heuristic(raw_text)
         return "task_correlated", task_rows, [], metadata
+
+    if word_rows:
+        acla_rows = detect_and_extract_acla_summary(word_rows)
+        if acla_rows:
+            metadata = extract_invoice_metadata_heuristic(raw_text)
+            return "task_correlated", acla_rows, [], metadata
 
     result = extract_invoice_tm_receipt_llm(raw_text)
     metadata = {
