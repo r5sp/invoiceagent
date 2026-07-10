@@ -73,6 +73,49 @@ def add_task_correlated_invoice(db, project, task, period_start, previously_bill
     return invoice
 
 
+def test_no_contract_invoice_analyzed_standalone(db):
+    """With no contract, an invoice line that carries its own contract_amount is still analyzed:
+    no NOT_IN_CONTRACT noise, a real billing summary, at-limit flag, and a workbook that renders."""
+    from app.services.billing_sheet import generate_billing_workbook
+
+    project = Project(name="No-contract project", consultant_name="ACLA")
+    db.add(project)
+    db.flush()
+    invoice = Invoice(
+        project_id=project.id, file_name="10776.pdf", invoice_number="10776", invoice_format="task_correlated"
+    )
+    db.add(invoice)
+    db.flush()
+    db.add(InvoiceLineItem(
+        invoice_id=invoice.id, contract_task_id=None, raw_task_number="T3A1", raw_cost_code="2100-0450",
+        description="SD Job Parks 3", amount=0.0, previously_billed=42000.0, billed_this_period=0.0,
+        total_billed_to_date=42000.0, contract_amount=42000.0,
+    ))
+    db.add(InvoiceLineItem(
+        invoice_id=invoice.id, contract_task_id=None, raw_task_number="T18A3", raw_cost_code="2100-0450",
+        description="Shoreline Finishes", amount=600.0, previously_billed=3150.0, billed_this_period=600.0,
+        total_billed_to_date=3750.0, contract_amount=8000.0,
+    ))
+    db.commit()
+    db.refresh(project)
+    db.refresh(invoice)
+
+    flags = review_invoice(project, invoice)
+    assert not any(f["rule_code"] == "NOT_IN_CONTRACT" for f in flags)
+    assert any(f["rule_code"] == "THRESHOLD_WARNING" for f in flags)  # T3A1 at 100%
+
+    summary = summarize_billing(project)
+    assert {r.task_number for r in summary.rows} == {"T3A1", "T18A3"}
+    t3 = next(r for r in summary.rows if r.task_number == "T3A1")
+    assert t3.pct_billed == 1.0 and t3.flag_level == "critical"
+    t18 = next(r for r in summary.rows if r.task_number == "T18A3")
+    assert t18.flag_level is None  # 46.9% — under threshold
+
+    # Regression: the Excel billing sheet must render with no contract present.
+    wb = generate_billing_workbook(project)
+    assert "Summary" in wb.sheetnames
+
+
 def test_first_invoice_seeds_baseline_no_false_prior_mismatch(db):
     project, contract, task = make_project_with_task(db, estimated_fee=100_000)
     invoice = add_task_correlated_invoice(

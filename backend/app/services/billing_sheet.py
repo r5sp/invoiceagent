@@ -55,7 +55,10 @@ def _build_summary_sheet(wb: Workbook, project: Project) -> None:
     ws["A1"] = project.name
     ws["A1"].font = Font(bold=True, size=14)
     ws["A2"] = f"Consultant: {project.consultant_name or '—'}"
-    ws["A3"] = f"Contract: {contract.file_name if contract else '—'} ({contract.label or 'n/a'})"
+    if contract:
+        ws["A3"] = f"Contract: {contract.file_name} ({contract.label or 'n/a'})"
+    else:
+        ws["A3"] = "Contract: — (summary built from invoices)"
 
     header_row = 5
     headers = [
