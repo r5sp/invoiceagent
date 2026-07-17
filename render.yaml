@@ -20,13 +20,14 @@ services:
         value: "true"                # Render serves over HTTPS
       - key: OPENAI_API_KEY
         sync: false                  # paste your OpenAI key in the dashboard (recommended)
-      # --- Optional: persist data across redeploys (default is SQLite, which resets on redeploy) ---
-      # Uncomment the databases block below AND this var to use a managed Postgres instead:
-      # - key: DATABASE_URL
-      #   fromDatabase:
-      #     name: invoiceagent-db
-      #     property: connectionString
+      # Persistent storage: managed Postgres so accounts + billing data survive redeploys/restarts.
+      # (SQLite on Render's ephemeral disk was wiped on every spin-down — that's why users kept
+      #  having to "Create Account" instead of signing in.)
+      - key: DATABASE_URL
+        fromDatabase:
+          name: invoiceagent-db
+          property: connectionString
 
-# databases:
-#   - name: invoiceagent-db
-#     plan: free
+databases:
+  - name: invoiceagent-db
+    plan: starter                    # paid, permanent (free Postgres is deleted after 30 days)
